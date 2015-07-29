@@ -20,11 +20,16 @@ package org.sufficientlysecure.keychain.ui;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
 import android.support.v4.app.FragmentActivity;
 
+import org.sufficientlysecure.keychain.Constants;
 import org.sufficientlysecure.keychain.R;
 import org.sufficientlysecure.keychain.compatibility.DialogFragmentWorkaround;
 import org.sufficientlysecure.keychain.service.input.CryptoInputParcel;
+import org.sufficientlysecure.keychain.util.Log;
 import org.sufficientlysecure.keychain.util.ParcelableProxy;
 import org.sufficientlysecure.keychain.util.Preferences;
 import org.sufficientlysecure.keychain.util.orbot.OrbotHelper;
@@ -34,6 +39,9 @@ import org.sufficientlysecure.keychain.util.orbot.OrbotHelper;
  * dialog to enable orbot.
  */
 public class OrbotRequiredDialogActivity extends FragmentActivity {
+
+    // action supplied to not show dialog and directly start orbot
+    public static final String ACTION_START_ORBOT = "start_orbot";
 
     // to provide any previous crypto input into which proxy preference is merged
     public static final String EXTRA_CRYPTO_INPUT = "extra_crypto_input";
@@ -45,6 +53,18 @@ public class OrbotRequiredDialogActivity extends FragmentActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (getIntent().getAction() != null) {
+            switch(getIntent().getAction()) {
+                case ACTION_START_ORBOT: {
+                    Intent startOrbot = OrbotHelper.getOrbotStartIntent();
+                    startActivity(startOrbot);
+                    finish();
+                    // orbot returns from the activity we start immediately. before it is started
+                    // startActivityForResult(startOrbot, REQUEST_ORBOT_START);
+                    return;
+                }
+            }
+        }
         mCryptoInputParcel = getIntent().getParcelableExtra(EXTRA_CRYPTO_INPUT);
         if (mCryptoInputParcel == null) {
             mCryptoInputParcel = new CryptoInputParcel();

@@ -17,8 +17,10 @@
 
 package org.sufficientlysecure.keychain.pgp;
 
+import org.spongycastle.asn1.nist.NISTNamedCurves;
 import org.spongycastle.bcpg.CompressionAlgorithmTags;
 import org.spongycastle.bcpg.HashAlgorithmTags;
+import org.spongycastle.bcpg.PublicKeyAlgorithmTags;
 import org.spongycastle.bcpg.SymmetricKeyAlgorithmTags;
 
 import java.util.HashSet;
@@ -34,20 +36,24 @@ import java.util.HashSet;
  */
 public class PgpConstants {
 
-//    public interface MIN_REQUIREMENT {
-//        int MIN_BITS;
-//        int BINDING_SIGNATURE_HASH_ALGO; // for User IDs, subkeys,...
-//        int SYMMETRIC_ALGO;
-//    }
-    // https://tools.ietf.org/html/rfc6637#section-13
-
     /*
-        PgpDecryptVerify: Secure Algorithms Whitelist
-        all other algorithms will be rejected with OpenPgpDecryptionResult.RESULT_INSECURE
-
-        No broken ciphers or ciphers with key length smaller than 128 bit are allowed!
+     * TODO:
+     * - put checks for curve OIDs and algorithm tags into import instead of PgpDecryptVerify?
+     * - check signingRing in PgpDecryptVerify?
+     * - Check binding signatures for requirements? on import?
+     * - ECC checks https://tools.ietf.org/html/rfc6637#section-13
+     * - check encryption algo used for encryption secret keys?
+     * - check S2K security?
+     * - check for min rsa/dsa/elgamal/ecc requirements in key creation backend
      */
-    public static HashSet<Integer> sSymmetricAlgorithmsWhitelist = new HashSet<>();
+
+    /**
+     * Whitelist of accepted symmetric encryption algorithms
+     * all other algorithms are rejected with OpenPgpDecryptionResult.RESULT_INSECURE
+     *
+     * REASON: No broken ciphers or ciphers with key length smaller than 128 bit are allowed!
+     */
+    private static HashSet<Integer> sSymmetricAlgorithmsWhitelist = new HashSet<>();
     static {
         sSymmetricAlgorithmsWhitelist.add(SymmetricKeyAlgorithmTags.AES_256);
         sSymmetricAlgorithmsWhitelist.add(SymmetricKeyAlgorithmTags.AES_192);
@@ -55,28 +61,88 @@ public class PgpConstants {
         sSymmetricAlgorithmsWhitelist.add(SymmetricKeyAlgorithmTags.TWOFISH); // 128 bit
     }
 
-    // all other algorithms will be rejected with OpenPgpSignatureResult.RESULT_INVALID_INSECURE
-    public static HashSet<Integer> sHashAlgorithmsWhitelist = new HashSet<>();
+    public static boolean isSecureSymmetricAlgorithm(int id) {
+        return sSymmetricAlgorithmsWhitelist.contains(id);
+    }
+
+    /**
+     * Whitelist of accepted hash algorithms
+     * all other algorithms are rejected with OpenPgpSignatureResult.RESULT_INSECURE
+     *
+     * REASON:
+     * SHA256 is still included to be compatible with some implementations, such as Mailvelope.
+     *
+     * coorus:
+     * Implementations SHOULD use SHA-512 for RSA or DSA signatures. They SHOULD NOT use SHA-384.
+     * ((cite to affine padding attacks; unproven status of RSA-PKCSv15))
+     *
+     * Implementations MUST NOT sign SHA-224 hashes. They SHOULD NOT accept signatures over SHA-224 hashes.
+     * ((collision resistance of 112-bits))
+     * Implementations SHOULD NOT sign SHA-256 hashes. They MUST NOT default to signing SHA-256 hashes.
+     */
+    private static HashSet<Integer> sHashAlgorithmsWhitelist = new HashSet<>();
     static {
         sHashAlgorithmsWhitelist.add(HashAlgorithmTags.SHA512);
         sHashAlgorithmsWhitelist.add(HashAlgorithmTags.SHA384);
-        /*
-            TODO: SHA256 and SHA224 are still allowed even though
-            coruus advises against it, to enable better backward compatibility
-
-            coruus:
-            Implementations MUST NOT sign SHA-224 hashes. They SHOULD NOT accept signatures over SHA-224 hashes.
-            ((collision resistance of 112-bits))
-            Implementations SHOULD NOT sign SHA-256 hashes. They MUST NOT default to signing SHA-256 hashes.
-         */
         sHashAlgorithmsWhitelist.add(HashAlgorithmTags.SHA256);
-        sHashAlgorithmsWhitelist.add(HashAlgorithmTags.SHA224);
     }
 
-    /*
-     * Most preferred is first
-     * These arrays are written as preferred algorithms into the keys on creation.
+    public static boolean isSecureHashAlgorithm(int id) {
+        return sHashAlgorithmsWhitelist.contains(id);
+    }
+
+    /**
+     * Whitelist of accepted asymmetric algorithms in switch statement
+     * all other algorithms are rejected with OpenPgpSignatureResult.RESULT_INSECURE or
+     * OpenPgpDecryptionResult.RESULT_INSECURE
+     *
+     * REASON:
+     * Don't allow ELGAMAL_GENERAL (20), reason in RFC
+     *
+     * coorus:
+     * Implementations MUST NOT accept, or treat any signature as valid, by an RSA key with
+     * bitlength less than 1023 bits.
+     * Implementations MUST NOT accept any RSA keys with bitlength less than 2047 bits after January 1, 2016.
+     */
+    private static HashSet<String> sCurveWhitelist = new HashSet<>();
+    static {
+        sCurveWhitelist.add(NISTNamedCurves.getOID("P-256").getId());
+        sCurveWhitelist.add(NISTNamedCurves.getOID("P-384").getId());
+        sCurveWhitelist.add(NISTNamedCurves.getOID("P-521").getId());
+    }
+
+    public static boolean isSecureKey(CanonicalizedPublicKey key) {
+        switch (key.getAlgorithm()) {
+            case PublicKeyAlgorithmTags.RSA_GENERAL:
+            case PublicKeyAlgorithmTags.RSA_ENCRYPT:
+            case PublicKeyAlgorithmTags.RSA_SIGN: {
+                return (key.getBitStrength() >= 1024);
+            }
+
+            case PublicKeyAlgorithmTags.ELGAMAL_ENCRYPT: {
+                return (key.getBitStrength() >= 1024);
+            }
+
+            case PublicKeyAlgorithmTags.DSA: {
+                return (key.getBitStrength() >= 1024);
+            }
+
+            case PublicKeyAlgorithmTags.ECDH:
+            case PublicKeyAlgorithmTags.ECDSA: {
+                return PgpConstants.sCurveWhitelist.contains(key.getCurveOid());
+            }
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * These array is written as a list of preferred encryption algorithms into keys created by us.
      * Other implementations may choose to honor this selection.
+     * (Most preferred is first)
+     *
+     * REASON: See corresponding whitelist. Twofish is included in our whitelist and considered
+     * secure but is not preferred as it has not received the same amount of cryptanalysis as AES.
      */
     public static final int[] PREFERRED_SYMMETRIC_ALGORITHMS = new int[]{
             SymmetricKeyAlgorithmTags.AES_256,
@@ -84,68 +150,92 @@ public class PgpConstants {
             SymmetricKeyAlgorithmTags.AES_128,
     };
 
-    /*
-        coorus:
-        Implementations SHOULD use SHA-512 for RSA or DSA signatures. They SHOULD NOT use SHA-384.
-        ((cite to affine padding attacks; unproven status of RSA-PKCSv15))
+    /**
+     * These array is written as a list of preferred hash algorithms into keys created by us.
+     * Other implementations may choose to honor this selection.
+     * (Most preferred is first)
+     *
+     * REASON: See corresponding whitelist
      */
     public static final int[] PREFERRED_HASH_ALGORITHMS = new int[]{
             HashAlgorithmTags.SHA512,
     };
 
-    /*
-     * Prefer ZIP
-     * "ZLIB provides no benefit over ZIP and is more malleable"
-     * - (OpenPGP WG mailinglist: "[openpgp] Intent to deprecate: Insecure primitives")
-     * BZIP2: very slow
+    /**
+     * These array is written as a list of preferred compression algorithms into keys created by us.
+     * Other implementations may choose to honor this selection.
+     * (Most preferred is first)
+     *
+     * REASON: See DEFAULT_COMPRESSION_ALGORITHM
      */
     public static final int[] PREFERRED_COMPRESSION_ALGORITHMS = new int[]{
             CompressionAlgorithmTags.ZIP,
     };
 
+    /**
+     * Hash algorithm used to certify public keys
+     */
     public static final int CERTIFY_HASH_ALGO = HashAlgorithmTags.SHA512;
 
 
-    /*
-    Always use AES-256! Ignore the preferred encryption algos of the recipient!
-
-    coorus:
-    Implementations SHOULD ignore the symmetric algorithm preferences of a recipient's public key;
-    in particular, implementations MUST NOT choose an algorithm forbidden by this
-    document because a recipient prefers it.
-
-    NEEDCITE downgrade attacks on TLS, other protocols
+    /**
+     * Always use AES-256! We always ignore the preferred encryption algos of the recipient!
+     *
+     * coorus:
+     * Implementations SHOULD ignore the symmetric algorithm preferences of a recipient's public key;
+     * in particular, implementations MUST NOT choose an algorithm forbidden by this
+     * document because a recipient prefers it.
+     *
+     * NEEDCITE downgrade attacks on TLS, other protocols
      */
     public static final int DEFAULT_SYMMETRIC_ALGORITHM = SymmetricKeyAlgorithmTags.AES_256;
+
     public interface OpenKeychainSymmetricKeyAlgorithmTags extends SymmetricKeyAlgorithmTags {
         int USE_DEFAULT = -1;
     }
 
-    /*
-    Always use SHA-512! Ignore the preferred hash algos of the recipient!
-
-    coorus:
-    Implementations MUST ignore the hash algorithm preferences of a recipient when signing
-    a message to a recipient. The difficulty of forging a signature under a given key,
-    using generic attacks on hash functions, is the difficulty of the weakest hash signed by that key.
-
-    Implementations MUST default to using SHA-512 for RSA signatures,
-
-    and either SHA-512 or the matched instance of SHA-2 for ECDSA signatures.
-    TODO: Ed25519
-    CITE: zooko's hash function table CITE: distinguishers on SHA-256
+    /**
+     * Always use SHA-512!  We always ignore the preferred hash algos of the recipient!
+     *
+     * coorus:
+     * Implementations MUST ignore the hash algorithm preferences of a recipient when signing
+     * a message to a recipient. The difficulty of forging a signature under a given key,
+     * using generic attacks on hash functions, is the difficulty of the weakest hash signed by that key.
+     *
+     * Implementations MUST default to using SHA-512 for RSA signatures,
+     *
+     * and either SHA-512 or the matched instance of SHA-2 for ECDSA signatures.
+     * TODO: Ed25519
+     * CITE: zooko's hash function table CITE: distinguishers on SHA-256
      */
     public static final int DEFAULT_HASH_ALGORITHM = HashAlgorithmTags.SHA512;
+
     public interface OpenKeychainHashAlgorithmTags extends HashAlgorithmTags {
         int USE_DEFAULT = -1;
     }
 
+    /**
+     * Compression is disabled by default.
+     *
+     * The default compression algorithm is only used if explicitly enabled in the activity's
+     * overflow menu or via the OpenPGP API's extra OpenPgpApi.EXTRA_ENABLE_COMPRESSION
+     *
+     * REASON: Enabling compression can lead to a sidechannel. Consider a voting that is done via
+     * OpenPGP. Compression can lead to different ciphertext lengths based on the user's voting.
+     * This has happened in a voting done by Wikipedia (Google it).
+     *
+     * Use ZIP instead of ZLIB or BZIP2:
+     * "ZLIB provides no benefit over ZIP and is more malleable"
+     * - (OpenPGP WG mailinglist: "[openpgp] Intent to deprecate: Insecure primitives")
+     * BZIP2: very slow
+     */
     public static final int DEFAULT_COMPRESSION_ALGORITHM = CompressionAlgorithmTags.ZIP;
+
     public interface OpenKeychainCompressionAlgorithmTags extends CompressionAlgorithmTags {
         int USE_DEFAULT = -1;
     }
 
-    /*
+    /**
      * Note: s2kcount is a number between 0 and 0xff that controls the
      * number of times to iterate the password hash before use. More
      * iterations are useful against offline attacks, as it takes more
